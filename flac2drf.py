@@ -233,7 +233,6 @@ def create_drf_dataset(subchannels, timestamps, inputdir, flac_file_pattern, out
                 if flac_file_num_samples != expected_samples:
                     print('num samples for flac file', flac_file, 'in subchannel', subchannel[0], 'is', flac_file_num_samples, '- expecting', expected_samples, file=sys.stderr)
                     return False
-            x = np.hstack(samples, casting='no')
             do.rf_write(np.hstack(samples, casting='no'))
             # hopefully deleting samples will free all the memory
             del samples
