@@ -72,25 +72,25 @@ def main():
         if sample_rate == None:
             sample_rate = wav_sample_rate
         elif wav_sample_rate != sample_rate:
-            printf('sample rates do not match - file', wav_file, 'has', wav_sample_rate, '- expecting:', sample_rate, file=sys.stderr)
+            print('sample rates do not match - file', wav_file, 'has', wav_sample_rate, '- expecting:', sample_rate, file=sys.stderr)
             sys.exit(1)
         wav_num_samples = samples[idx].shape[0]
         if num_samples == None:
             num_samples = wav_num_samples
         elif wav_num_samples != num_samples:
-            printf('number of samples does not match - file', wav_file, 'has', wav_num_samples, '- expecting:', num_samples, file=sys.stderr)
+            print('number of samples does not match - file', wav_file, 'has', wav_num_samples, '- expecting:', num_samples, file=sys.stderr)
             sys.exit(1)
         wav_num_channels = samples[idx].shape[1]
         if num_channels == None:
             num_channels = wav_num_channels
         elif wav_num_channels != num_channels:
-            printf('number of channels does not match - file', wav_file, 'has', wav_num_channels, '- expecting:', num_channels, file=sys.stderr)
+            print('number of channels does not match - file', wav_file, 'has', wav_num_channels, '- expecting:', num_channels, file=sys.stderr)
             sys.exit(1)
         wav_data_type = samples[idx].dtype
         if data_type == None:
             data_type = wav_data_type
         elif wav_data_type != data_type:
-            printf('data type does not match - file', wav_file, 'has', wav_data_type, '- expecting:', data_type, file=sys.stderr)
+            print('data type does not match - file', wav_file, 'has', wav_data_type, '- expecting:', data_type, file=sys.stderr)
             sys.exit(1)
 
     start_global_index = int(start_time * sample_rate)

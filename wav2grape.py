@@ -1,16 +1,13 @@
 #!/usr/bin/python3 -u
 # convert a directory tree containing wav files into a Digital RF dataset
-# directory structure:
-#   - topdir (input dir: -i)
-#     - subdir1 (subchannel 1) - frequency is now derived from channel name
-#       - <filename>.wav
-#     - subdir2 (subchannel 2) - frequency is now derived from channel name
-#       - <filename>.wav
-#     ...
+# for the grape system
+#
+# directory layout:
+#   <basedir>/<YYYYMMDD>/<site>_<grid_square>/<receiver_name>/<subchannel_name>/<I/Q sample>.wav
 #
 # Copyright 2024 Franco Venturi K4VZ
 #
-# Version: 1.0 - Tue Jan 16 09:46:22 PM EST 2024
+# Version: 1.0 - Mon 22 Jan 2024 10:58:05 PM UTC
 
 from collections import defaultdict
 from configparser import ConfigParser
@@ -28,6 +25,18 @@ import uuid
 verbose = 0
 
 
+def maidenhead_to_long_lat(x):
+    long = (ord(x[0]) - ord('A')) * 20 + (ord(x[2]) - ord('0')) * 2 - 180
+    lat  = (ord(x[1]) - ord('A')) * 10 + (ord(x[3]) - ord('0'))     -  90
+    if len(x) >= 6:
+        long += (ord(x[4].upper()) - ord('A')) * 5.0 / 60.0
+        lat  += (ord(x[5].upper()) - ord('A')) * 2.5 / 60.0
+        if len(x) == 8:
+            long += (ord(x[6]) - ord('0')) * 30.0 / 3600.0
+            lat  += (ord(x[7]) - ord('0')) * 15.0 / 3600.0
+    return long, lat
+
+
 def get_subchannels(inputdir, subdir2freq):
     # create list of subchannels and make sure that each has one wav file in it
     subchannels = []
@@ -35,8 +44,9 @@ def get_subchannels(inputdir, subdir2freq):
         if subdir not in subdir2freq:
             print('Subdir', subdir, 'not found in subchannels list. Skipping it.', file=sys.stderr)
             continue
-        subdir_content = os.listdir(os.path.join(inputdir, subdir))
-        if not (len(subdir_content) == 1 and subdir_content[0].endswith('.wav')):
+        subdir_content = [x for x in os.listdir(os.path.join(inputdir, subdir))
+                          if x.endswith('.wav')]
+        if len(subdir_content) != 1:
             print('Subdir', subdir, 'does not contain a single wav file. Skipping it.', f'(content: {subdir_content})', file=sys.stderr)
             continue
         subchannels.append((subdir, subdir_content[0], float(subdir2freq[subdir])))
@@ -45,7 +55,7 @@ def get_subchannels(inputdir, subdir2freq):
     return subchannels
 
 
-def create_drf_dataset(inputdir, outputdir, subchannels, config_global, start_time, uuid_str=None):
+def create_drf_dataset(inputdir, dataset_dir, subchannels, config_global, start_time, uuid_str=None):
     channel_name = config_global['channel name']
     subdir_cadence_secs = int(config_global['subdir cadence secs'])
     file_cadence_millisecs = int(config_global['file cadence millisecs'])
@@ -105,8 +115,8 @@ def create_drf_dataset(inputdir, outputdir, subchannels, config_global, start_ti
     if uuid_str is None:
         uuid_str = uuid.uuid4().hex
 
-    # the output directory must already exist
-    channel_dir = os.path.join(outputdir, channel_name)
+    # the dataset directory must already exist
+    channel_dir = os.path.join(dataset_dir, channel_name)
     os.makedirs(channel_dir)
 
     with drf.DigitalRFWriter(channel_dir,
@@ -125,7 +135,8 @@ def create_drf_dataset(inputdir, outputdir, subchannels, config_global, start_ti
                              False                   # marching_periods
                             ) as do:
 
-        do.rf_write(np.hstack(samples, casting='no'))
+        #do.rf_write(np.hstack(samples, casting='no'))
+        do.rf_write(np.hstack(samples))
 
     # hopefully deleting samples will free all the memory
     del samples
@@ -133,7 +144,35 @@ def create_drf_dataset(inputdir, outputdir, subchannels, config_global, start_ti
     return True, channel_dir, sample_rate, start_global_index, uuid_str
 
 
-def create_drf_metadata(channel_dir, frequencies, config_global, config_metadata, sample_rate, start_global_index, uuid_str):
+def create_metadata(latitude, longitude, config, site, station, callsign, grid_square, receiver_name, frequencies, uuid_str):
+    metadata = dict()
+    if site in config:
+        metadata.update(config[site])
+    if station in config:
+        metadata.update(config[station])
+    if latitude is not None:
+        metadata['lat'] = np.single(latitude)
+    elif 'latitude' in metadata:
+        metadata['lat'] = np.single(float(metadata['latitude']))
+        del metadata['latitude']
+    if longitude is not None:
+        metadata['long'] = np.single(longitude)
+    elif 'longitude' in metadata:
+        metadata['long'] = np.single(float(metadata['longitude']))
+        del metadata['longitude']
+    if callsign is not None:
+        metadata['callsign'] = callsign
+    if grid_square is not None:
+        metadata['grid_square'] = grid_square
+    if receiver_name is not None:
+        metadata['receiver_name'] = receiver_name
+    metadata['center_frequencies'] = np.ascontiguousarray(frequencies)
+    metadata['uuid_str'] = uuid_str
+
+    return metadata
+
+
+def create_drf_metadata(channel_dir, config_global, sample_rate, start_global_index, metadata):
     subdir_cadence_secs = int(config_global['subdir cadence secs'])
     metadatadir = os.path.join(channel_dir, 'metadata')
     os.makedirs(metadatadir)
@@ -145,18 +184,7 @@ def create_drf_metadata(channel_dir, frequencies, config_global, config_metadata
                                    'metadata'        # file_name
                                   )
     sample = start_global_index
-    data_dict = {
-        'uuid_str': uuid_str,
-        'lat': np.single(float(config_metadata['latitude'])),
-        'long': np.single(float(config_metadata['longitude'])),
-        'center_frequencies': np.ascontiguousarray(frequencies)
-    }
-    # all all the remaining arguments as strings
-    for k, v in config_metadata.items():
-        if k in ['latitude', 'longitude']:
-            continue
-        data_dict[k] = v
-    do.write(sample, data_dict)
+    do.write(sample, metadata)
     return True
 
 
@@ -164,10 +192,12 @@ def main():
     configfile = sys.argv[0].replace('.py', '.conf')
     inputdir = None
     outputdir = None
-    start_time = 0
+    start_time = None
+    latitude = None
+    longitude = None
     uuid_str = None
     try:
-        opts, args = getopt.getopt(sys.argv[1:], 'c:i:o:s:u:v')
+        opts, args = getopt.getopt(sys.argv[1:], 'c:i:o:s:l:u:v')
     except getopt.GetoptError as ex:
         print(ex, file=sys.stderr)
         sys.exit(1)
@@ -184,6 +214,8 @@ def main():
             # always UTC
             start_datetime = datetime.fromisoformat(a).replace(tzinfo=timezone.utc)
             start_time = start_datetime.timestamp()
+        elif o == '-l':
+            latitude, longitude = [float(x) for x in split(a, ',')]
         elif o == '-u':
             uuid_str = a
         elif o == '-v':
@@ -207,6 +239,29 @@ def main():
             except ValueError:
                 pass
 
+    station_path = None
+    station = None
+    site = None
+    callsign = None
+    grid_square = None
+    receiver_name = None
+
+    inputdir_regex = re.compile('(?:.+/|^)(?P<date>\d{8})/(?P<station>(?P<site>(?P<callsign>[a-zA-Z0-9=]+)_(?P<grid_square>[a-zA-Z0-9]+))/(?P<receiver_name>\w+))$')
+    m = inputdir_regex.match(inputdir)
+    if m:
+        if start_time is None:
+            start_time = datetime.strptime(m.group('date'), '%Y%m%d').timestamp()
+        station_path = m.group('station')
+        station = station_path.replace('/', ' ').replace('=', '/')
+        site = m.group('site').replace('=', '/')
+        callsign = m.group('callsign').replace('=', '/')
+        grid_square = m.group('grid_square')
+        if latitude is None and longitude is None:
+            longitude, latitude = maidenhead_to_long_lat(grid_square)
+        receiver_name = m.group('receiver_name')
+    else:
+        print('unable to extract station information from input directory', file=sys.stderr)
+
     config = ConfigParser(interpolation=None)
     config.optionxform = str
     config.read(configfile)
@@ -219,16 +274,26 @@ def main():
     if verbose >= 1:
         print('subchannels:', subchannels)
 
-    ok, channel_dir, sample_rate, start_global_index, uuid_str = create_drf_dataset(inputdir, outputdir, subchannels, config['global'], start_time, uuid_str)
+    if station_path is not None:
+        grape_toplevel = datetime.fromtimestamp(start_time).strftime('OBS%Y-%m-%dT%H-%M')
+        dataset_dir = os.path.join(outputdir, station_path, grape_toplevel)
+    else:
+        dataset_dir = outputdir
+
+    ok, channel_dir, sample_rate, start_global_index, uuid_str = create_drf_dataset(inputdir, dataset_dir, subchannels, config['global'], start_time, uuid_str)
     print('create_drf_dataset returned', ok, file=sys.stderr)
     if not ok:
         sys.exit(1)
 
     frequencies = [float(x[2]) for x in subchannels]
-    ok = create_drf_metadata(channel_dir, frequencies, config['global'], config['metadata'], sample_rate, start_global_index, uuid_str)
+    metadata = create_metadata(latitude, longitude, config, site, station, callsign, grid_square, receiver_name, frequencies, uuid_str)
+
+    ok = create_drf_metadata(channel_dir, config['global'], sample_rate, start_global_index, metadata)
     print('create_drf_metadata returned', ok, file=sys.stderr)
     if not ok:
         sys.exit(1)
+
+    print(dataset_dir)
 
 
 if __name__ == '__main__':
